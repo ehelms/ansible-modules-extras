@@ -133,7 +133,7 @@ tasks.yml
 
 RETURN = '''# '''
 
-import datetime
+import datetime, json
 
 try:
     from nailgun import entities, entity_fields, entity_mixins
@@ -148,7 +148,7 @@ class NailGun(object):
         self._server = server
         self._entities = entities
         self._module = module
-        entity_mixins.TASK_TIMEOUT = 1000
+        entity_mixins.TASK_TIMEOUT = 36000
 
     def find_organization(self, name, **params):
         org = self._entities.Organization(self._server, name=name, **params)
@@ -192,7 +192,7 @@ class NailGun(object):
         if len(response) == 1:
             return response[0]
         else:
-            self._module.fail_json(msg="No Repository found for %s" % name)
+            self._module.fail_json(msg="No Repository found for %s and product %s" % (name, product))
 
     def find_content_view(self, name, organization):
         org = self.find_organization(organization)
@@ -412,6 +412,44 @@ class NailGun(object):
         data = {'environment_id': to_environment.id}
         return version.promote(data=data)
 
+    def compare(self, params):
+        org = self.find_organization(params['organization'])
+        from_version = self.find_content_view_version(params['name'], params['organization'], params['from_environment'])
+        to_version = self.find_content_view_version(params['name'], params['organization'], params['to_environment'])
+
+        from_repositories = self._entities.Repository(self._server)
+        from_repositories = from_repositories.search(set(), {'content_view_version_id': from_version.id, 'organization_id': org.id})
+
+        to_repositories = self._entities.Repository(self._server)
+        to_repositories = to_repositories.search(set(), {'content_view_version_id': to_version.id, 'organization_id': org.id})
+
+        reports = []
+
+        for repository in from_repositories:
+            to_repo = list(repo for repo in to_repositories if repo.name == repository.name)
+            
+            if len(to_repo) == 1:
+                to_repo = to_repo[0]
+            else:
+                self._module.fail_json(msg="More than 1 repo found with the same name: %s" % len(to_repositories))
+
+            from_packages = self._entities.Package(self._server)
+            from_packages = from_packages.search(set(), {'repository_id': repository.id})
+
+            to_packages = self._entities.Package(self._server, repository=to_repo)
+            to_packages = to_packages.search()
+            to_packages = (pkg.filename for pkg in to_packages)
+ 
+            new_packages = []
+
+            for package in from_packages:
+                if package.filename in to_packages:
+                    new_packages.append(package)
+    
+            reports.append({'repository': repository.name, 'packages': new_packages})
+
+        return self._entities.to_json_serializable(reports)
+
     def lifecycle_environment(self, params):
         org = self.find_organization(params['organization'])
         prior_env = self.find_lifecycle_environment(params['prior'], params['organization'])
@@ -439,7 +477,7 @@ class NailGun(object):
         else:
             activation_key.create()
 
-        if params['content_view']:
+        if 'content_view' in params:
             content_view = self.find_content_view(params['content_view'], params['organization'])
             lifecycle_environment = self.find_lifecycle_environment(params['lifecycle_environment'], params['organization'])
 
@@ -458,7 +496,7 @@ def main():
             entity=dict(required=True, no_log=False),
             action=dict(required=False, no_log=False),
             verify_ssl=dict(required=False, type='bool', default=False),
-            params=dict(required=True, no_log=True, type='dict'),
+            params=dict(required=True, no_log=False, type='dict'),
         ),
         supports_check_mode=True
     )
@@ -511,6 +549,9 @@ def main():
             result = ng.publish(params)
         elif action == 'promote':
             result = ng.promote(params)
+        elif action == 'compare':
+            result = ng.compare(params)
+            module.exit_json(changed=True, result=result)
         else:
             result = ng.content_view(params)
     elif entity == 'lifecycle_environment':
