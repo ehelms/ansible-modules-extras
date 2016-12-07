@@ -414,6 +414,10 @@ class NailGun(object):
         version = self.find_content_view_version(params['name'], params['organization'], params['from_environment'])
 
         data = {'environment_id': to_environment.id}
+
+        if 'force' in params.keys():
+            data['force'] = params['force']
+
         return version.promote(data=data)
 
     def lifecycle_environment(self, params):
